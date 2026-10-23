@@ -1,0 +1,33 @@
+{
+  "name": "clinik-app",
+  "version": "0.1.0",
+  "private": true,
+  "scripts": {
+    "dev": "next dev",
+    "build": "next build",
+    "start": "next start",
+    "lint": "eslint",
+    "merge-frames": "python scripts/merge_frames.py",
+    "frames:status": "python scripts/merge_frames.py --status",
+    "frames:reindex": "python scripts/merge_frames.py --reindex"
+  },
+  "dependencies": {
+    "lucide-react": "^1.60.0",
+    "next": "16.4.2",
+    "nodemailer": "^10.1.7",
+    "react": "19.3.0",
+    "react-dom": "19.3.0"
+  },
+  "devDependencies": {
+    "@types/node": "^20",
+    "@types/nodemailer": "^8.0.2",
+    "@types/react": "^19",
+    "@types/react-dom": "^19",
+    "autoprefixer": "^10.6.1",
+    "eslint": "^9",
+    "eslint-config-next": "16.4.2",
+    "postcss": "^8.5.31",
+    "tailwindcss": "^3.4.19",
+    "typescript": "^5"
+  }
+}
