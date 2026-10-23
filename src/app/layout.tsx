@@ -22,7 +22,18 @@ export const viewport: Viewport = {
   themeColor: "#0D0F12",
 };
 
-const siteUrl = "https://dubaimed.consulting";
+const getSiteUrl = () => {
+  if (process.env.NEXT_PUBLIC_SITE_URL) {
+    const url = process.env.NEXT_PUBLIC_SITE_URL.trim();
+    return url.startsWith("http") ? url : `https://${url}`;
+  }
+  if (process.env.RAILWAY_PUBLIC_DOMAIN) {
+    return `https://${process.env.RAILWAY_PUBLIC_DOMAIN.trim()}`;
+  }
+  return "https://dubaimed.consulting";
+};
+
+const siteUrl = getSiteUrl();
 
 export const metadata: Metadata = {
   metadataBase: new URL(siteUrl),
