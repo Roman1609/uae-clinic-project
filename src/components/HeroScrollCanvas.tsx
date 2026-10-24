@@ -182,9 +182,9 @@ export default function HeroScrollCanvas({
     const startProg = scrollProgress;
     const endProg = stageProgress[targetStage];
 
-    // Smooth duration proportional to frame distance (~750ms to 1250ms)
+    // Smooth duration proportional to frame distance (~700ms to 1100ms)
     const frameDiff = Math.abs(endFrame - startFrame);
-    const duration = Math.min(1300, Math.max(750, (frameDiff / totalFrames) * 1700));
+    const duration = Math.min(1200, Math.max(680, (frameDiff / totalFrames) * 1500));
     const startTime = performance.now();
 
     const step = (now: number) => {
@@ -215,6 +215,45 @@ export default function HeroScrollCanvas({
     requestAnimationFrame(step);
   }, [totalFrames, drawFrame, scrollProgress]);
 
+  // Lock body & document scroll on mobile/tablet until user reaches the final stage (stage 4)
+  useEffect(() => {
+    if (!isMobileDevice) {
+      document.body.style.overflow = "";
+      document.documentElement.style.overflow = "";
+      document.body.style.touchAction = "";
+      document.body.style.overscrollBehaviorY = "";
+      document.documentElement.style.overscrollBehaviorY = "";
+      return;
+    }
+
+    // While on stages 1, 2, 3: lock body overflow so the page cannot scroll down past the hero
+    if (mobileStage < 4) {
+      document.body.style.overflow = "hidden";
+      document.documentElement.style.overflow = "hidden";
+      document.body.style.touchAction = "none";
+      document.body.style.overscrollBehaviorY = "none";
+      document.documentElement.style.overscrollBehaviorY = "none";
+      if (window.scrollY > 0) {
+        window.scrollTo(0, 0);
+      }
+    } else {
+      // Reached stage 4: unlock body so user can scroll down naturally
+      document.body.style.overflow = "";
+      document.documentElement.style.overflow = "";
+      document.body.style.touchAction = "";
+      document.body.style.overscrollBehaviorY = "";
+      document.documentElement.style.overscrollBehaviorY = "";
+    }
+
+    return () => {
+      document.body.style.overflow = "";
+      document.documentElement.style.overflow = "";
+      document.body.style.touchAction = "";
+      document.body.style.overscrollBehaviorY = "";
+      document.documentElement.style.overscrollBehaviorY = "";
+    };
+  }, [isMobileDevice, mobileStage]);
+
   // Desktop scroll listener: calculates progress from scroll position
   useEffect(() => {
     const handleScroll = () => {
@@ -239,72 +278,154 @@ export default function HeroScrollCanvas({
     };
   }, [totalFrames, isMobileDevice]);
 
-  // Touch swipe handling for mobile & tablet (swipe up = play to next stage, swipe down = play to prev stage)
+  // Mobile/Tablet swipe gesture handling with strict viewport locking
   useEffect(() => {
     if (!isMobileDevice) return;
-    const container = containerRef.current;
-    if (!container) return;
 
     let touchStartY = 0;
     let touchStartX = 0;
-    let isTouchActive = false;
+    let isSwiping = false;
 
     const onTouchStart = (e: TouchEvent) => {
       if (e.touches.length !== 1) return;
       touchStartY = e.touches[0].clientY;
       touchStartX = e.touches[0].clientX;
-      isTouchActive = true;
+      isSwiping = true;
     };
 
     const onTouchMove = (e: TouchEvent) => {
-      if (!isTouchActive || e.touches.length !== 1) return;
+      if (!isSwiping || e.touches.length !== 1) return;
       const currentY = e.touches[0].clientY;
       const currentX = e.touches[0].clientX;
-      const diffY = touchStartY - currentY;
+      const diffY = touchStartY - currentY; // positive = dragging finger UP (advance), negative = dragging DOWN (go back/refresh)
       const diffX = touchStartX - currentX;
 
-      // Only handle clear vertical gestures
-      if (Math.abs(diffY) > Math.abs(diffX) && Math.abs(diffY) > 35) {
-        if (isTransitioningRef.current) {
-          if (e.cancelable) e.preventDefault();
-          return;
-        }
+      const isVertical = Math.abs(diffY) > Math.abs(diffX);
 
-        // Swipe UP (play continuously to next stage)
-        if (diffY > 35) {
-          if (mobileStageRef.current < 4) {
-            if (e.cancelable) e.preventDefault();
-            isTouchActive = false;
-            animateToStage((mobileStageRef.current + 1) as 1 | 2 | 3 | 4);
-          } else {
-            // Already at stage 4: allow natural page scroll down to #authorities!
-          }
+      // Only handle deliberate vertical gestures
+      if (!isVertical || Math.abs(diffY) < 6) return;
+
+      // If currently animating between stages, prevent all scroll/gesture interference
+      if (isTransitioningRef.current) {
+        if (e.cancelable) e.preventDefault();
+        return;
+      }
+
+      // 1) Dragging finger UP (advance toward next slide / scroll down)
+      if (diffY > 0) {
+        if (mobileStageRef.current < 4) {
+          // Hero is on stage 1, 2, or 3: intercept and prevent page scroll down!
+          if (e.cancelable) e.preventDefault();
+        } else {
+          // Already on final stage 4: allow natural page scroll down to subsequent sections
         }
-        // Swipe DOWN (play continuously to previous stage)
-        else if (diffY < -35) {
-          if (mobileStageRef.current > 1 && window.scrollY <= 10) {
-            if (e.cancelable) e.preventDefault();
-            isTouchActive = false;
-            animateToStage((mobileStageRef.current - 1) as 1 | 2 | 3 | 4);
+      }
+      // 2) Dragging finger DOWN (return toward previous slide / refresh)
+      else if (diffY < 0) {
+        if (mobileStageRef.current > 1) {
+          // On stage 2, 3, or 4: intercept and prevent browser pull-to-refresh
+          if (e.cancelable) e.preventDefault();
+        } else {
+          // On stage 1 at the top of the viewport: allow native pull-down so browser can refresh
+        }
+      }
+    };
+
+    const onTouchEnd = (e: TouchEvent) => {
+      if (!isSwiping) return;
+      isSwiping = false;
+
+      if (isTransitioningRef.current) return;
+
+      const touchEndY = e.changedTouches[0]?.clientY ?? touchStartY;
+      const diffY = touchStartY - touchEndY; // positive = swiped UP, negative = swiped DOWN
+      const threshold = 40; // minimum pixels to count as deliberate swipe
+
+      // Swiped UP (advance forward)
+      if (diffY > threshold) {
+        if (mobileStageRef.current < 4) {
+          animateToStage((mobileStageRef.current + 1) as 1 | 2 | 3 | 4);
+        } else {
+          // Reached stage 4: swiping up unlocks scroll and scrolls down to #authorities
+          document.body.style.overflow = "";
+          document.documentElement.style.overflow = "";
+          document.body.style.touchAction = "";
+          document.body.style.overscrollBehaviorY = "";
+          document.documentElement.style.overscrollBehaviorY = "";
+          const nextSec = document.getElementById("authorities");
+          nextSec?.scrollIntoView({ behavior: "smooth" });
+        }
+      }
+      // Swiped DOWN (go backward or refresh)
+      else if (diffY < -threshold) {
+        if (mobileStageRef.current > 1) {
+          // If on stage 4, only transition back to stage 3 if user has scrolled all the way back to top
+          if (mobileStageRef.current === 4 && window.scrollY > 20) {
+            return;
+          }
+          animateToStage((mobileStageRef.current - 1) as 1 | 2 | 3 | 4);
+        } else {
+          // On stage 1 at the top of the viewport: firm swipe down triggers page refresh
+          if (diffY < -80 && window.scrollY <= 10) {
+            window.location.reload();
           }
         }
       }
     };
 
-    const onTouchEnd = () => {
-      isTouchActive = false;
+    // Wheel event handler for trackpad/responsive emulator testing
+    const onWheel = (e: WheelEvent) => {
+      if (isTransitioningRef.current) {
+        if (e.cancelable) e.preventDefault();
+        return;
+      }
+
+      if (e.deltaY > 30) {
+        if (mobileStageRef.current < 4) {
+          if (e.cancelable) e.preventDefault();
+          animateToStage((mobileStageRef.current + 1) as 1 | 2 | 3 | 4);
+        }
+      } else if (e.deltaY < -30) {
+        if (mobileStageRef.current > 1) {
+          if (mobileStageRef.current === 4 && window.scrollY > 20) {
+            return;
+          }
+          if (e.cancelable) e.preventDefault();
+          animateToStage((mobileStageRef.current - 1) as 1 | 2 | 3 | 4);
+        }
+      }
     };
 
-    container.addEventListener("touchstart", onTouchStart, { passive: true });
-    container.addEventListener("touchmove", onTouchMove, { passive: false });
-    container.addEventListener("touchend", onTouchEnd, { passive: true });
+    window.addEventListener("touchstart", onTouchStart, { passive: true });
+    window.addEventListener("touchmove", onTouchMove, { passive: false });
+    window.addEventListener("touchend", onTouchEnd, { passive: true });
+    window.addEventListener("wheel", onWheel, { passive: false });
 
     return () => {
-      container.removeEventListener("touchstart", onTouchStart);
-      container.removeEventListener("touchmove", onTouchMove);
-      container.removeEventListener("touchend", onTouchEnd);
+      window.removeEventListener("touchstart", onTouchStart);
+      window.removeEventListener("touchmove", onTouchMove);
+      window.removeEventListener("touchend", onTouchEnd);
+      window.removeEventListener("wheel", onWheel);
     };
   }, [isMobileDevice, animateToStage]);
+
+  // Re-engage stage lock if user scrolls back to the very top from below
+  useEffect(() => {
+    if (!isMobileDevice) return;
+
+    const handleWindowScroll = () => {
+      if (window.scrollY <= 5 && mobileStageRef.current < 4) {
+        document.body.style.overflow = "hidden";
+        document.documentElement.style.overflow = "hidden";
+        document.body.style.touchAction = "none";
+        document.body.style.overscrollBehaviorY = "none";
+        document.documentElement.style.overscrollBehaviorY = "none";
+      }
+    };
+
+    window.addEventListener("scroll", handleWindowScroll, { passive: true });
+    return () => window.removeEventListener("scroll", handleWindowScroll);
+  }, [isMobileDevice]);
 
   // Smooth desktop lerp loop for silky 60fps frame rendering
   useEffect(() => {
@@ -326,6 +447,21 @@ export default function HeroScrollCanvas({
       }
     };
   }, [drawFrame, isMobileDevice]);
+
+  // Helper for CTA buttons to unlock body and scroll smoothly
+  const handleNavClick = (e: React.MouseEvent<HTMLAnchorElement>, targetId: string) => {
+    e.preventDefault();
+    isTransitioningRef.current = false;
+    mobileStageRef.current = 4;
+    setMobileStage(4);
+    document.body.style.overflow = "";
+    document.documentElement.style.overflow = "";
+    document.body.style.touchAction = "";
+    document.body.style.overscrollBehaviorY = "";
+    document.documentElement.style.overscrollBehaviorY = "";
+    const el = document.getElementById(targetId);
+    el?.scrollIntoView({ behavior: "smooth" });
+  };
 
   // Calculate opacities and transformations for the 4 stages across all 196 frames
   const getStageStyle = (stage: 1 | 2 | 3 | 4) => {
@@ -399,7 +535,11 @@ export default function HeroScrollCanvas({
   return (
     <div
       ref={containerRef}
-      className="relative w-full h-[100dvh] lg:h-[480vh] bg-obsidian"
+      className={`relative w-full ${isMobileDevice ? "h-[100dvh] overflow-hidden" : "h-[480vh]"} bg-obsidian`}
+      style={{
+        touchAction: isMobileDevice && mobileStage < 4 ? "none" : "auto",
+        overscrollBehaviorY: isMobileDevice && mobileStage > 1 ? "none" : "auto",
+      }}
       id="hero-scroll-container"
     >
       {/* Sticky Viewport Container */}
@@ -465,6 +605,7 @@ export default function HeroScrollCanvas({
             <div className="flex flex-col sm:flex-row items-center gap-3 sm:gap-4 w-full sm:w-auto">
               <a
                 href="#contact"
+                onClick={(e) => handleNavClick(e, "contact")}
                 className="w-full sm:w-auto px-8 py-3.5 rounded-xl font-bold text-xs uppercase tracking-widest text-obsidian bg-gradient-to-r from-gold-300 via-gold-400 to-gold-500 shadow-gold-glow hover:shadow-gold-lg hover:scale-105 transition-all duration-300 flex items-center justify-center gap-2"
               >
                 Start Your Project
@@ -472,6 +613,7 @@ export default function HeroScrollCanvas({
               </a>
               <a
                 href="#services"
+                onClick={(e) => handleNavClick(e, "services")}
                 className="w-full sm:w-auto px-7 py-3.5 rounded-xl font-semibold text-xs uppercase tracking-widest text-slate-200 bg-obsidian-card/80 border border-white/10 hover:border-gold-500/40 hover:text-white transition-all duration-300 backdrop-blur-md"
               >
                 Explore Services
@@ -589,6 +731,7 @@ export default function HeroScrollCanvas({
             <div className="flex flex-col sm:flex-row items-center gap-3 sm:gap-4 w-full sm:w-auto">
               <a
                 href="#contact"
+                onClick={(e) => handleNavClick(e, "contact")}
                 className="w-full sm:w-auto px-8 py-3.5 rounded-xl font-bold text-xs uppercase tracking-widest text-obsidian bg-gradient-to-r from-gold-300 via-gold-400 to-gold-500 shadow-gold-glow hover:scale-105 transition-all duration-300 flex items-center justify-center gap-2"
               >
                 Schedule Executive Consultation
@@ -596,6 +739,7 @@ export default function HeroScrollCanvas({
               </a>
               <a
                 href="#process"
+                onClick={(e) => handleNavClick(e, "process")}
                 className="w-full sm:w-auto px-7 py-3.5 rounded-xl font-semibold text-xs uppercase tracking-widest text-slate-200 bg-obsidian-card/80 border border-white/10 hover:border-gold-500/40 transition-all duration-300 backdrop-blur-md"
               >
                 View 4-Step Roadmap
@@ -654,7 +798,7 @@ export default function HeroScrollCanvas({
             ))}
           </div>
 
-          {/* Central Animated Scroll Cue (Desktop) / Next Phase Pill (Mobile) */}
+          {/* Central Animated Scroll Cue (Desktop) */}
           <div className="hidden md:flex flex-col items-center gap-1.5 opacity-70 hover:opacity-100 transition-opacity">
             <span className="text-[10px] uppercase font-semibold tracking-[0.25em] text-slate-400">
               Scroll To Scrub Sequence
@@ -671,11 +815,16 @@ export default function HeroScrollCanvas({
                 if (activeStage < 4) {
                   animateToStage((activeStage + 1) as 1 | 2 | 3 | 4);
                 } else {
+                  document.body.style.overflow = "";
+                  document.documentElement.style.overflow = "";
+                  document.body.style.touchAction = "";
+                  document.body.style.overscrollBehaviorY = "";
+                  document.documentElement.style.overscrollBehaviorY = "";
                   const nextSection = document.getElementById("authorities");
                   nextSection?.scrollIntoView({ behavior: "smooth" });
                 }
               }}
-              className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-full bg-obsidian-card/90 border border-gold-500/30 text-[10px] font-bold uppercase tracking-wider text-gold-300 shadow-gold-glow"
+              className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-full bg-obsidian-card/90 border border-gold-500/30 text-[10px] font-bold uppercase tracking-wider text-gold-300 shadow-gold-glow active:scale-95 transition-all"
             >
               <span>{activeStage < 4 ? `Phase 0${activeStage + 1}` : "Explore"}</span>
               <ChevronRight className="w-3.5 h-3.5 text-gold-400 animate-pulse" />
