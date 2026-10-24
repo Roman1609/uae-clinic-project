@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useRef, useState, useCallback } from "react";
-import { ArrowDown, CheckCircle2, ChevronRight, ShieldCheck, Sparkles, Award, TrendingUp } from "lucide-react";
+import { ArrowDown, CheckCircle2, ChevronRight, ShieldCheck, Sparkles, Award, TrendingUp, ChevronDown } from "lucide-react";
 
 interface HeroScrollCanvasProps {
   totalFrames?: number;
@@ -20,15 +20,21 @@ export default function HeroScrollCanvas({
   const [isLoaded, setIsLoaded] = useState(false);
   const [scrollProgress, setScrollProgress] = useState(0);
 
+  // Mobile & Tablet slide stage state
+  const [isMobileDevice, setIsMobileDevice] = useState(false);
+  const [mobileStage, setMobileStage] = useState<1 | 2 | 3 | 4>(1);
+  const mobileStageRef = useRef<1 | 2 | 3 | 4>(1);
+  const isTransitioningRef = useRef(false);
+
   // Target and current frame for smooth lerp
   const targetFrameRef = useRef(0);
   const currentFrameRef = useRef(0);
   const animationFrameId = useRef<number | null>(null);
 
-  // Helper to format frame path
+  // Helper to format frame path (using converted WebP frames)
   const getFramePath = (index: number) => {
     const frameNum = String(index + 1).padStart(3, "0");
-    return `/hero-frames/${framePrefix}${frameNum}.jpg`;
+    return `/hero-frames/${framePrefix}${frameNum}.webp`;
   };
 
   // Draw frame on canvas with aspect ratio "cover"
@@ -88,7 +94,20 @@ export default function HeroScrollCanvas({
     drawFrame(Math.round(currentFrameRef.current));
   }, [drawFrame]);
 
-  // Preload all 96 frames
+  // Check mobile & tablet detection (< 1024px or touch device)
+  useEffect(() => {
+    const checkDevice = () => {
+      const isTouch = typeof window !== "undefined" && ("ontouchstart" in window || navigator.maxTouchPoints > 0);
+      const isMobile = window.innerWidth < 1024 || (isTouch && window.innerWidth < 1200);
+      setIsMobileDevice(isMobile);
+    };
+
+    checkDevice();
+    window.addEventListener("resize", checkDevice);
+    return () => window.removeEventListener("resize", checkDevice);
+  }, []);
+
+  // Preload all 196 WebP frames
   useEffect(() => {
     let loadedCount = 0;
     const imageElements: HTMLImageElement[] = [];
@@ -114,9 +133,9 @@ export default function HeroScrollCanvas({
       };
 
       img.onerror = () => {
-        // Fallback: if loading with ezgif-frame- fails, attempt loading without prefix (001.jpg)
-        if (img.src.includes("ezgif-frame-")) {
-          img.src = img.src.replace("ezgif-frame-", "");
+        // Fallback: if .webp fails, attempt loading original .jpg
+        if (img.src.includes(".webp")) {
+          img.src = img.src.replace(".webp", ".jpg");
           return;
         }
         loadedCount++;
@@ -138,9 +157,68 @@ export default function HeroScrollCanvas({
     };
   }, [totalFrames, drawFrame, resizeCanvas]);
 
-  // Scroll listener to calculate progress
+  // Smooth continuous frame-by-frame playback between stages on mobile/tablet
+  const animateToStage = useCallback((targetStage: 1 | 2 | 3 | 4) => {
+    if (isTransitioningRef.current) return;
+    isTransitioningRef.current = true;
+    mobileStageRef.current = targetStage;
+    setMobileStage(targetStage);
+
+    const startFrame = currentFrameRef.current;
+    const stageTargets = {
+      1: 0,
+      2: Math.round(totalFrames * 0.33),
+      3: Math.round(totalFrames * 0.66),
+      4: totalFrames - 1,
+    };
+    const endFrame = stageTargets[targetStage];
+
+    const stageProgress = {
+      1: 0,
+      2: 0.33,
+      3: 0.66,
+      4: 1.0,
+    };
+    const startProg = scrollProgress;
+    const endProg = stageProgress[targetStage];
+
+    // Smooth duration proportional to frame distance (~750ms to 1250ms)
+    const frameDiff = Math.abs(endFrame - startFrame);
+    const duration = Math.min(1300, Math.max(750, (frameDiff / totalFrames) * 1700));
+    const startTime = performance.now();
+
+    const step = (now: number) => {
+      const elapsed = now - startTime;
+      const t = Math.min(1, elapsed / duration);
+      // Smooth cubic easeInOut
+      const ease = t < 0.5 ? 4 * t * t * t : 1 - Math.pow(-2 * t + 2, 3) / 2;
+
+      const nextFrame = startFrame + (endFrame - startFrame) * ease;
+      currentFrameRef.current = nextFrame;
+      targetFrameRef.current = nextFrame;
+      drawFrame(Math.round(nextFrame));
+
+      const nextProg = startProg + (endProg - startProg) * ease;
+      setScrollProgress(nextProg);
+
+      if (t < 1) {
+        requestAnimationFrame(step);
+      } else {
+        currentFrameRef.current = endFrame;
+        targetFrameRef.current = endFrame;
+        drawFrame(endFrame);
+        setScrollProgress(endProg);
+        isTransitioningRef.current = false;
+      }
+    };
+
+    requestAnimationFrame(step);
+  }, [totalFrames, drawFrame, scrollProgress]);
+
+  // Desktop scroll listener: calculates progress from scroll position
   useEffect(() => {
     const handleScroll = () => {
+      if (isMobileDevice) return; // In mobile/tablet mode, controlled via continuous slide transitions
       if (!containerRef.current) return;
       const rect = containerRef.current.getBoundingClientRect();
       const scrollableHeight = rect.height - window.innerHeight;
@@ -159,10 +237,78 @@ export default function HeroScrollCanvas({
     return () => {
       window.removeEventListener("scroll", handleScroll);
     };
-  }, [totalFrames]);
+  }, [totalFrames, isMobileDevice]);
 
-  // Smooth lerp loop for silky 60fps frame rendering
+  // Touch swipe handling for mobile & tablet (swipe up = play to next stage, swipe down = play to prev stage)
   useEffect(() => {
+    if (!isMobileDevice) return;
+    const container = containerRef.current;
+    if (!container) return;
+
+    let touchStartY = 0;
+    let touchStartX = 0;
+    let isTouchActive = false;
+
+    const onTouchStart = (e: TouchEvent) => {
+      if (e.touches.length !== 1) return;
+      touchStartY = e.touches[0].clientY;
+      touchStartX = e.touches[0].clientX;
+      isTouchActive = true;
+    };
+
+    const onTouchMove = (e: TouchEvent) => {
+      if (!isTouchActive || e.touches.length !== 1) return;
+      const currentY = e.touches[0].clientY;
+      const currentX = e.touches[0].clientX;
+      const diffY = touchStartY - currentY;
+      const diffX = touchStartX - currentX;
+
+      // Only handle clear vertical gestures
+      if (Math.abs(diffY) > Math.abs(diffX) && Math.abs(diffY) > 35) {
+        if (isTransitioningRef.current) {
+          if (e.cancelable) e.preventDefault();
+          return;
+        }
+
+        // Swipe UP (play continuously to next stage)
+        if (diffY > 35) {
+          if (mobileStageRef.current < 4) {
+            if (e.cancelable) e.preventDefault();
+            isTouchActive = false;
+            animateToStage((mobileStageRef.current + 1) as 1 | 2 | 3 | 4);
+          } else {
+            // Already at stage 4: allow natural page scroll down to #authorities!
+          }
+        }
+        // Swipe DOWN (play continuously to previous stage)
+        else if (diffY < -35) {
+          if (mobileStageRef.current > 1 && window.scrollY <= 10) {
+            if (e.cancelable) e.preventDefault();
+            isTouchActive = false;
+            animateToStage((mobileStageRef.current - 1) as 1 | 2 | 3 | 4);
+          }
+        }
+      }
+    };
+
+    const onTouchEnd = () => {
+      isTouchActive = false;
+    };
+
+    container.addEventListener("touchstart", onTouchStart, { passive: true });
+    container.addEventListener("touchmove", onTouchMove, { passive: false });
+    container.addEventListener("touchend", onTouchEnd, { passive: true });
+
+    return () => {
+      container.removeEventListener("touchstart", onTouchStart);
+      container.removeEventListener("touchmove", onTouchMove);
+      container.removeEventListener("touchend", onTouchEnd);
+    };
+  }, [isMobileDevice, animateToStage]);
+
+  // Smooth desktop lerp loop for silky 60fps frame rendering
+  useEffect(() => {
+    if (isMobileDevice) return; // Mobile uses rAF inside animateToStage
     const loop = () => {
       const diff = targetFrameRef.current - currentFrameRef.current;
       if (Math.abs(diff) > 0.05) {
@@ -179,13 +325,9 @@ export default function HeroScrollCanvas({
         cancelAnimationFrame(animationFrameId.current);
       }
     };
-  }, [drawFrame]);
+  }, [drawFrame, isMobileDevice]);
 
   // Calculate opacities and transformations for the 4 stages across all 196 frames
-  // Stage 1 (0.00 - 0.25): Turnkey Advisory & Launch Concept
-  // Stage 2 (0.25 - 0.50): Official Licenses & Regulatory Approvals
-  // Stage 3 (0.50 - 0.75): Sovereign Authority Alignment & Proven Metrics (2nd Section Content Integrated)
-  // Stage 4 (0.75 - 1.00): Operational Scaling & Ready to Launch
   const getStageStyle = (stage: 1 | 2 | 3 | 4) => {
     let opacity = 0;
     let translateY = 20;
@@ -244,23 +386,24 @@ export default function HeroScrollCanvas({
     };
   };
 
-  const activeStage =
-    scrollProgress < 0.25
-      ? 1
-      : scrollProgress < 0.5
-        ? 2
-        : scrollProgress < 0.75
-          ? 3
-          : 4;
+  const activeStage = isMobileDevice
+    ? mobileStage
+    : scrollProgress < 0.25
+    ? 1
+    : scrollProgress < 0.5
+    ? 2
+    : scrollProgress < 0.75
+    ? 3
+    : 4;
 
   return (
     <div
       ref={containerRef}
-      className="relative w-full h-[480vh] bg-obsidian"
+      className="relative w-full h-[100dvh] lg:h-[480vh] bg-obsidian"
       id="hero-scroll-container"
     >
       {/* Sticky Viewport Container */}
-      <div className="sticky top-0 w-full h-screen overflow-hidden flex items-center justify-center">
+      <div className="sticky top-0 w-full h-[100dvh] overflow-hidden flex items-center justify-center">
         {/* HTML5 Canvas for the 196-frame sequence */}
         <canvas
           ref={canvasRef}
@@ -298,28 +441,28 @@ export default function HeroScrollCanvas({
         )}
 
         {/* Dynamic Overlay Content Containers */}
-        <div className="relative z-20 max-w-5xl mx-auto px-4 sm:px-8 text-center flex items-center justify-center min-h-[580px] w-full">
+        <div className="relative z-20 max-w-5xl mx-auto px-4 sm:px-8 text-center flex items-center justify-center min-h-[520px] sm:min-h-[580px] w-full">
 
           {/* STAGE 1: Turnkey Medical Clinic Setup in Dubai (Scene 1 Opening) */}
           <div
             className="absolute inset-0 max-w-4xl mx-auto px-4 transition-all duration-500 ease-out flex flex-col items-center justify-center text-center"
             style={getStageStyle(1)}
           >
-            <div className="inline-flex items-center gap-2.5 px-4 py-1.5 rounded-full bg-obsidian-card/90 border border-gold-500/30 backdrop-blur-md mb-6 shadow-gold-glow">
+            <div className="inline-flex items-center gap-2.5 px-4 py-1.5 rounded-full bg-obsidian-card/90 border border-gold-500/30 backdrop-blur-md mb-4 sm:mb-6 shadow-gold-glow">
               <Sparkles className="w-3.5 h-3.5 text-gold-400 animate-pulse" />
               <span className="text-xs font-semibold tracking-[0.2em] uppercase text-gold-300">
                 Phase 01 • Turnkey Advisory
               </span>
             </div>
-            <h1 className="font-playfair text-4xl sm:text-6xl md:text-7xl font-bold tracking-tight text-white mb-6 leading-[1.1]">
+            <h1 className="font-playfair text-3xl sm:text-6xl md:text-7xl font-bold tracking-tight text-white mb-4 sm:mb-6 leading-[1.1]">
               Turnkey Medical Clinic <br />
               <span className="gold-gradient-text">Setup in Dubai</span>
             </h1>
-            <p className="font-jakarta text-base sm:text-lg md:text-xl text-slate-300 font-light max-w-2xl mx-auto mb-10 leading-relaxed">
+            <p className="font-jakarta text-sm sm:text-lg md:text-xl text-slate-300 font-light max-w-2xl mx-auto mb-8 sm:mb-10 leading-relaxed">
               Complete legal support, DHA/MOH licensing, and full documentation
               for launching your healthcare business in the UAE.
             </p>
-            <div className="flex flex-col sm:flex-row items-center gap-4">
+            <div className="flex flex-col sm:flex-row items-center gap-3 sm:gap-4 w-full sm:w-auto">
               <a
                 href="#contact"
                 className="w-full sm:w-auto px-8 py-3.5 rounded-xl font-bold text-xs uppercase tracking-widest text-obsidian bg-gradient-to-r from-gold-300 via-gold-400 to-gold-500 shadow-gold-glow hover:shadow-gold-lg hover:scale-105 transition-all duration-300 flex items-center justify-center gap-2"
@@ -341,25 +484,25 @@ export default function HeroScrollCanvas({
             className="absolute inset-0 max-w-4xl mx-auto px-4 transition-all duration-500 ease-out flex flex-col items-center justify-center text-center"
             style={getStageStyle(2)}
           >
-            <div className="inline-flex items-center gap-2 px-4 py-1.5 rounded-full bg-obsidian-card/90 border border-gold-500/30 backdrop-blur-md mb-6 shadow-gold-glow">
+            <div className="inline-flex items-center gap-2 px-4 py-1.5 rounded-full bg-obsidian-card/90 border border-gold-500/30 backdrop-blur-md mb-4 sm:mb-6 shadow-gold-glow">
               <ShieldCheck className="w-4 h-4 text-gold-400" />
               <span className="text-xs font-semibold tracking-[0.2em] uppercase text-gold-300">
                 Phase 02 • DHA & MOH Regulatory Licensing
               </span>
             </div>
-            <h2 className="font-playfair text-4xl sm:text-6xl md:text-7xl font-bold tracking-tight text-white mb-6 leading-[1.1]">
+            <h2 className="font-playfair text-3xl sm:text-6xl md:text-7xl font-bold tracking-tight text-white mb-4 sm:mb-6 leading-[1.1]">
               Official Licenses & <br />
               <span className="gold-gradient-text">Regulatory Approvals</span>
             </h2>
-            <p className="font-jakarta text-base sm:text-lg md:text-xl text-slate-300 font-light max-w-2xl mx-auto mb-10 leading-relaxed">
+            <p className="font-jakarta text-sm sm:text-lg md:text-xl text-slate-300 font-light max-w-2xl mx-auto mb-8 sm:mb-10 leading-relaxed">
               We handle government authorities, facility compliance, and business
               license acquisition seamlessly without delays.
             </p>
-            <div className="flex flex-wrap justify-center gap-3 max-w-xl mx-auto">
+            <div className="flex flex-wrap justify-center gap-2.5 sm:gap-3 max-w-xl mx-auto">
               {["100% DHA Audit Pass", "Fast-track Clearance", "Medical Staff Credentialing", "Zero Rejection Risk"].map((tag) => (
                 <span
                   key={tag}
-                  className="inline-flex items-center gap-1.5 px-3.5 py-1.5 rounded-lg text-xs font-medium text-slate-300 bg-obsidian-card border border-gold-500/20"
+                  className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium text-slate-300 bg-obsidian-card border border-gold-500/20"
                 >
                   <CheckCircle2 className="w-3.5 h-3.5 text-gold-400" />
                   {tag}
@@ -373,22 +516,22 @@ export default function HeroScrollCanvas({
             className="absolute inset-0 max-w-5xl mx-auto px-4 transition-all duration-500 ease-out flex flex-col items-center justify-center text-center"
             style={getStageStyle(3)}
           >
-            <div className="inline-flex items-center gap-2 px-4 py-1.5 rounded-full bg-obsidian-card/90 border border-gold-500/30 backdrop-blur-md mb-4 shadow-gold-glow">
+            <div className="inline-flex items-center gap-2 px-4 py-1.5 rounded-full bg-obsidian-card/90 border border-gold-500/30 backdrop-blur-md mb-3 sm:mb-4 shadow-gold-glow">
               <Award className="w-4 h-4 text-gold-400" />
               <span className="text-xs font-semibold tracking-[0.2em] uppercase text-gold-300">
                 Phase 03 • Sovereign Compliance & Track Record
               </span>
             </div>
-            <h2 className="font-playfair text-3xl sm:text-5xl md:text-6xl font-bold tracking-tight text-white mb-3 leading-[1.1]">
+            <h2 className="font-playfair text-2xl sm:text-5xl md:text-6xl font-bold tracking-tight text-white mb-2 sm:mb-3 leading-[1.1]">
               Direct Regulatory Access & <br />
               <span className="gold-gradient-text">Verified Track Record</span>
             </h2>
-            <p className="font-jakarta text-sm sm:text-base md:text-lg text-slate-300 font-light max-w-2xl mx-auto mb-6 leading-relaxed">
+            <p className="font-jakarta text-xs sm:text-base md:text-lg text-slate-300 font-light max-w-2xl mx-auto mb-5 sm:mb-6 leading-relaxed">
               We eliminate intermediaries by directly submitting and defending clinical applications with Dubai Health Authority (DHA) & UAE MOHAP.
             </p>
 
             {/* 4 Trust Metric Cards in Grid */}
-            <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 sm:gap-4 w-full max-w-4xl mx-auto mb-6">
+            <div className="grid grid-cols-2 sm:grid-cols-4 gap-2.5 sm:gap-4 w-full max-w-4xl mx-auto mb-4 sm:mb-6">
               {[
                 { value: "100%", label: "DHA Audit Pass", desc: "First-attempt approval rate" },
                 { value: "50+", label: "Clinics Launched", desc: "Aesthetic, dental & polyclinics" },
@@ -397,15 +540,15 @@ export default function HeroScrollCanvas({
               ].map((m, idx) => (
                 <div
                   key={idx}
-                  className="p-3.5 sm:p-4 rounded-xl bg-obsidian-card/85 border border-gold-500/25 backdrop-blur-md text-center hover:border-gold-400/50 transition-all hover:-translate-y-0.5"
+                  className="p-3 sm:p-4 rounded-xl bg-obsidian-card/85 border border-gold-500/25 backdrop-blur-md text-center hover:border-gold-400/50 transition-all hover:-translate-y-0.5"
                 >
-                  <div className="font-playfair text-2xl sm:text-3xl font-extrabold gold-gradient-text mb-1">
+                  <div className="font-playfair text-xl sm:text-3xl font-extrabold gold-gradient-text mb-0.5 sm:mb-1">
                     {m.value}
                   </div>
-                  <div className="text-[11px] sm:text-xs font-bold uppercase tracking-wider text-white mb-0.5">
+                  <div className="text-[10px] sm:text-xs font-bold uppercase tracking-wider text-white mb-0.5">
                     {m.label}
                   </div>
-                  <div className="text-[10px] sm:text-[11px] text-slate-400 font-light">
+                  <div className="text-[9px] sm:text-[11px] text-slate-400 font-light line-clamp-1 sm:line-clamp-none">
                     {m.desc}
                   </div>
                 </div>
@@ -413,7 +556,7 @@ export default function HeroScrollCanvas({
             </div>
 
             {/* Authority Accreditations Badges */}
-            <div className="inline-flex flex-wrap items-center justify-center gap-3 text-[11px] font-semibold text-slate-400 uppercase tracking-wider bg-obsidian-card/70 px-4 py-2 rounded-full border border-white/10">
+            <div className="inline-flex flex-wrap items-center justify-center gap-2 sm:gap-3 text-[10px] sm:text-[11px] font-semibold text-slate-400 uppercase tracking-wider bg-obsidian-card/70 px-3.5 py-1.5 sm:px-4 sm:py-2 rounded-full border border-white/10">
               <span className="text-gold-300">DHA Dubai</span>
               <span className="text-white/20">•</span>
               <span className="text-gold-300">MOHAP Federal</span>
@@ -429,21 +572,21 @@ export default function HeroScrollCanvas({
             className="absolute inset-0 max-w-4xl mx-auto px-4 transition-all duration-500 ease-out flex flex-col items-center justify-center text-center"
             style={getStageStyle(4)}
           >
-            <div className="inline-flex items-center gap-2 px-4 py-1.5 rounded-full bg-obsidian-card/90 border border-gold-500/30 backdrop-blur-md mb-6 shadow-gold-glow">
+            <div className="inline-flex items-center gap-2 px-4 py-1.5 rounded-full bg-obsidian-card/90 border border-gold-500/30 backdrop-blur-md mb-4 sm:mb-6 shadow-gold-glow">
               <Sparkles className="w-3.5 h-3.5 text-gold-400" />
               <span className="text-xs font-semibold tracking-[0.2em] uppercase text-gold-300">
                 Phase 04 • Operational Launch & Growth
               </span>
             </div>
-            <h2 className="font-playfair text-4xl sm:text-6xl md:text-7xl font-bold tracking-tight text-white mb-6 leading-[1.1]">
+            <h2 className="font-playfair text-3xl sm:text-6xl md:text-7xl font-bold tracking-tight text-white mb-4 sm:mb-6 leading-[1.1]">
               A Profitable Healthcare <br />
               <span className="gold-gradient-text">Business Ready to Scale</span>
             </h2>
-            <p className="font-jakarta text-base sm:text-lg md:text-xl text-slate-300 font-light max-w-2xl mx-auto mb-10 leading-relaxed">
+            <p className="font-jakarta text-sm sm:text-lg md:text-xl text-slate-300 font-light max-w-2xl mx-auto mb-8 sm:mb-10 leading-relaxed">
               Guiding you through every step — from concept and real estate to
               equipment procurement and medical staffing.
             </p>
-            <div className="flex flex-col sm:flex-row items-center gap-4">
+            <div className="flex flex-col sm:flex-row items-center gap-3 sm:gap-4 w-full sm:w-auto">
               <a
                 href="#contact"
                 className="w-full sm:w-auto px-8 py-3.5 rounded-xl font-bold text-xs uppercase tracking-widest text-obsidian bg-gradient-to-r from-gold-300 via-gold-400 to-gold-500 shadow-gold-glow hover:scale-105 transition-all duration-300 flex items-center justify-center gap-2"
@@ -462,9 +605,9 @@ export default function HeroScrollCanvas({
         </div>
 
         {/* Bottom Interactive Bar with Progress Indicators & Scroll cue */}
-        <div className="absolute bottom-8 left-0 right-0 z-30 px-6 max-w-7xl mx-auto flex items-center justify-between pointer-events-none">
+        <div className="absolute bottom-6 sm:bottom-8 left-0 right-0 z-30 px-4 sm:px-6 max-w-7xl mx-auto flex items-center justify-between pointer-events-none">
           {/* Stage Step Indicators for all 4 phases */}
-          <div className="flex items-center gap-3 pointer-events-auto">
+          <div className="flex items-center gap-2 sm:gap-3 pointer-events-auto">
             {[
               { num: 1 as const, label: "Advisory" },
               { num: 2 as const, label: "Licensing" },
@@ -473,31 +616,35 @@ export default function HeroScrollCanvas({
             ].map(({ num, label }) => (
               <div
                 key={num}
-                className="flex items-center gap-2 cursor-pointer group"
+                className="flex items-center gap-1.5 sm:gap-2 cursor-pointer group py-2"
                 onClick={() => {
-                  if (!containerRef.current) return;
-                  const totalHeight = containerRef.current.offsetHeight - window.innerHeight;
-                  const targetScroll =
-                    containerRef.current.offsetTop +
-                    (num === 1
-                      ? 0
-                      : num === 2
-                        ? totalHeight * 0.33
-                        : num === 3
-                          ? totalHeight * 0.60
-                          : totalHeight * 0.88);
-                  window.scrollTo({ top: targetScroll, behavior: "smooth" });
+                  if (isMobileDevice) {
+                    animateToStage(num);
+                  } else {
+                    if (!containerRef.current) return;
+                    const totalHeight = containerRef.current.offsetHeight - window.innerHeight;
+                    const targetScroll =
+                      containerRef.current.offsetTop +
+                      (num === 1
+                        ? 0
+                        : num === 2
+                          ? totalHeight * 0.33
+                          : num === 3
+                            ? totalHeight * 0.60
+                            : totalHeight * 0.88);
+                    window.scrollTo({ top: targetScroll, behavior: "smooth" });
+                  }
                 }}
               >
                 <div
                   className={`h-1.5 rounded-full transition-all duration-500 ${
                     activeStage === num
-                      ? "w-8 bg-gradient-to-r from-gold-400 to-gold-200 shadow-[0_0_10px_#D4AF37]"
+                      ? "w-6 sm:w-8 bg-gradient-to-r from-gold-400 to-gold-200 shadow-[0_0_10px_#D4AF37]"
                       : "w-2 bg-white/20 group-hover:bg-white/40"
                   }`}
                 />
                 <span
-                  className={`text-[11px] font-semibold tracking-wider transition-colors ${
+                  className={`text-[10px] sm:text-[11px] font-semibold tracking-wider transition-colors ${
                     activeStage === num ? "text-gold-400" : "text-slate-500 hidden sm:inline"
                   }`}
                 >
@@ -507,7 +654,7 @@ export default function HeroScrollCanvas({
             ))}
           </div>
 
-          {/* Central Animated Scroll Cue */}
+          {/* Central Animated Scroll Cue (Desktop) / Next Phase Pill (Mobile) */}
           <div className="hidden md:flex flex-col items-center gap-1.5 opacity-70 hover:opacity-100 transition-opacity">
             <span className="text-[10px] uppercase font-semibold tracking-[0.25em] text-slate-400">
               Scroll To Scrub Sequence
@@ -517,10 +664,28 @@ export default function HeroScrollCanvas({
             </div>
           </div>
 
+          {/* Mobile / Tablet Next Phase tap & swipe cue */}
+          <div className="flex md:hidden items-center pointer-events-auto">
+            <button
+              onClick={() => {
+                if (activeStage < 4) {
+                  animateToStage((activeStage + 1) as 1 | 2 | 3 | 4);
+                } else {
+                  const nextSection = document.getElementById("authorities");
+                  nextSection?.scrollIntoView({ behavior: "smooth" });
+                }
+              }}
+              className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-full bg-obsidian-card/90 border border-gold-500/30 text-[10px] font-bold uppercase tracking-wider text-gold-300 shadow-gold-glow"
+            >
+              <span>{activeStage < 4 ? `Phase 0${activeStage + 1}` : "Explore"}</span>
+              <ChevronRight className="w-3.5 h-3.5 text-gold-400 animate-pulse" />
+            </button>
+          </div>
+
           {/* Authority Accreditation Badges */}
-          <div className="flex items-center gap-2 text-[11px] font-medium text-slate-400 pointer-events-auto">
+          <div className="hidden sm:flex items-center gap-2 text-[11px] font-medium text-slate-400 pointer-events-auto">
             <span className="w-2 h-2 rounded-full bg-emerald-400 animate-pulse" />
-            <span className="hidden sm:inline">Authority Compliant:</span>
+            <span className="hidden md:inline">Authority Compliant:</span>
             <span className="text-gold-300 font-semibold">DHA / MOH / DOH</span>
           </div>
         </div>

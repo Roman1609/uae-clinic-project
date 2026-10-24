@@ -8,6 +8,7 @@
     "start": "next start -H 0.0.0.0",
     "lint": "eslint",
     "merge-frames": "python scripts/merge_frames.py",
+    "convert-webp": "node scripts/convert_all_to_webp.mjs",
     "frames:status": "python scripts/merge_frames.py --status",
     "frames:reindex": "python scripts/merge_frames.py --reindex"
   },
