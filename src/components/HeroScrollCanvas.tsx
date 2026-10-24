@@ -3,14 +3,67 @@
 import { useEffect, useRef, useState, useCallback } from "react";
 import { ArrowDown, CheckCircle2, ChevronRight, ChevronLeft, ShieldCheck, Sparkles, Award, TrendingUp, ChevronDown } from "lucide-react";
 
+// ============================================================================
+// ANIMATION & TIMING CONFIGURATION SETTINGS
+// Easily adjust these parameters to fine-tune playback speeds for desktop & mobile
+// ============================================================================
+export const HERO_ANIMATION_CONFIG = {
+  /**
+   * Desktop scroll lerp smoothing factor (0.01 - 1.0)
+   * Higher = more immediate/responsive, Lower = heavier cinematic inertia
+   * Default: 0.25 (silky 60fps response)
+   */
+  desktopLerpSpeed: 0.25,
+
+  /**
+   * Mobile slide transition minimum duration (in milliseconds)
+   * Minimum time spent smoothly animating frames between adjacent slides
+   * Default: 650ms
+   */
+  mobileMinDurationMs: 650,
+
+  /**
+   * Mobile slide transition maximum duration (in milliseconds)
+   * Maximum time when jumping across multiple slides
+   * Default: 1200ms
+   */
+  mobileMaxDurationMs: 1200,
+
+  /**
+   * Mobile frame duration scale multiplier
+   * Scales duration proportionally to the frame distance
+   * Default: 1500
+   */
+  mobileDurationScale: 1500,
+
+  /**
+   * Mobile horizontal swipe threshold (in pixels)
+   * Distance needed for a deliberate swipe to change slides
+   * Default: 35px
+   */
+  mobileSwipeThresholdPx: 35,
+
+  /**
+   * Desktop total scroll height multiplier in vh units
+   * Default: 480vh
+   */
+  desktopScrollHeightVh: 480,
+};
+
 interface HeroScrollCanvasProps {
   totalFrames?: number;
   framePrefix?: string;
+  desktopLerpSpeed?: number;
+  mobileMinDurationMs?: number;
+  mobileMaxDurationMs?: number;
 }
 
 export default function HeroScrollCanvas({
   totalFrames = 196,
   framePrefix = "ezgif-frame-",
+  desktopLerpSpeed = HERO_ANIMATION_CONFIG.desktopLerpSpeed,
+  mobileMinDurationMs = HERO_ANIMATION_CONFIG.mobileMinDurationMs,
+  mobileMaxDurationMs = HERO_ANIMATION_CONFIG.mobileMaxDurationMs,
 }: HeroScrollCanvasProps) {
   const containerRef = useRef<HTMLDivElement>(null);
   const canvasRef = useRef<HTMLCanvasElement>(null);
@@ -182,9 +235,12 @@ export default function HeroScrollCanvas({
     const startProg = scrollProgress;
     const endProg = stageProgress[targetStage];
 
-    // Smooth duration proportional to frame distance (~700ms to 1100ms)
+    // Smooth duration proportional to frame distance
     const frameDiff = Math.abs(endFrame - startFrame);
-    const duration = Math.min(1200, Math.max(680, (frameDiff / totalFrames) * 1500));
+    const duration = Math.min(
+      mobileMaxDurationMs,
+      Math.max(mobileMinDurationMs, (frameDiff / totalFrames) * HERO_ANIMATION_CONFIG.mobileDurationScale)
+    );
     const startTime = performance.now();
 
     const step = (now: number) => {
@@ -276,7 +332,7 @@ export default function HeroScrollCanvas({
       const diffY = touchStartY - touchEndY;
 
       // Only respond if the gesture is predominantly horizontal (flipping slides)
-      if (Math.abs(diffX) > Math.abs(diffY) && Math.abs(diffX) > 35) {
+      if (Math.abs(diffX) > Math.abs(diffY) && Math.abs(diffX) > HERO_ANIMATION_CONFIG.mobileSwipeThresholdPx) {
         if (diffX > 0) {
           // Swipe LEFT -> advance to next stage (1 -> 2 -> 3 -> 4)
           if (mobileStageRef.current < 4) {
@@ -306,7 +362,7 @@ export default function HeroScrollCanvas({
     const loop = () => {
       const diff = targetFrameRef.current - currentFrameRef.current;
       if (Math.abs(diff) > 0.05) {
-        currentFrameRef.current += diff * 0.25;
+        currentFrameRef.current += diff * desktopLerpSpeed;
         drawFrame(Math.round(currentFrameRef.current));
       }
       animationFrameId.current = requestAnimationFrame(loop);
